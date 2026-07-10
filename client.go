@@ -1,9 +1,6 @@
-// Package client fornece um cliente HTTP simples com timeout, context e retry.
-package client
+package httpclient
 
 import (
-	"context"
-	"io"
 	"net/http"
 	"time"
 )
@@ -39,61 +36,6 @@ func NewClient(cfg Config) *Client {
 			Timeout: cfg.Timeout,
 		},
 	}
-}
-
-// Get faz uma requisição HTTP GET para a API configurada.
-func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
-	var (
-		resp *http.Response
-		err  error
-	)
-
-	delay := c.retryDelay
-
-	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		resp, err = c.httpClient.Do(req)
-
-		if !ShouldRetry(resp, err) {
-			break
-		}
-
-		if resp != nil {
-			resp.Body.Close()
-		}
-
-		if attempt == c.maxRetries {
-			break
-		}
-
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-
-		delay *= 2
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	if resp == nil {
-		return nil, context.Canceled
-	}
-
-	defer resp.Body.Close()
-
-	return io.ReadAll(resp.Body)
 }
 
 // ShouldRetry informa se uma chamada HTTP deve ser tentada novamente.
