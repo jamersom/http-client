@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const jsonContentType = "application/json"
+
 // Config define as configurações usadas para criar um Client.
 type Config struct {
 	BaseURL     string
@@ -17,6 +19,7 @@ type Config struct {
 	Logger      *log.Logger
 	Accept      string
 	ContentType string
+	Token       string
 }
 
 // Client executa chamadas HTTP para uma API usando as regras de Config.
@@ -28,6 +31,7 @@ type Client struct {
 	logger      *log.Logger
 	accept      string
 	contentType string
+	token       string
 }
 
 // NewClient cria uma instância de Client.
@@ -54,6 +58,7 @@ func NewClient(cfg Config) *Client {
 		logger:      cfg.Logger,
 		accept:      accept,
 		contentType: contentType,
+		token:       cfg.Token,
 		httpClient: &http.Client{
 			Timeout: cfg.Timeout,
 		},

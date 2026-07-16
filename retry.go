@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-const jsonContentType = "application/json"
-
 // doWithRetry executa a requisicao HTTP repetindo tentativas quando shouldRetry
 // indicar que o erro ou status code da resposta permite retry.
 func (c *Client) doWithRetry(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
@@ -61,6 +59,10 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", c.contentType)
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
 	return c.httpClient.Do(req)
