@@ -20,6 +20,7 @@ type Config struct {
 	Accept      string
 	ContentType string
 	Headers     map[string]string
+	HTTPClient  *http.Client
 }
 
 // Client executa chamadas HTTP para uma API usando as regras de Config.
@@ -27,11 +28,11 @@ type Client struct {
 	baseURL     string
 	maxRetries  int
 	retryDelay  time.Duration
-	httpClient  *http.Client
 	logger      *log.Logger
 	accept      string
 	contentType string
 	headers     map[string]string
+	httpClient  *http.Client
 }
 
 // NewClient cria uma instância de Client.
@@ -56,6 +57,13 @@ func NewClient(cfg Config) *Client {
 		headers[key] = value
 	}
 
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{
+			Timeout: cfg.Timeout,
+		}
+	}
+
 	return &Client{
 		baseURL:     cfg.BaseURL,
 		maxRetries:  cfg.MaxRetries,
@@ -64,9 +72,7 @@ func NewClient(cfg Config) *Client {
 		accept:      accept,
 		contentType: contentType,
 		headers:     headers,
-		httpClient: &http.Client{
-			Timeout: cfg.Timeout,
-		},
+		httpClient:  httpClient,
 	}
 }
 

@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -10,6 +11,12 @@ import (
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
 
 func TestNewClient(t *testing.T) {
 	cfg := Config{
@@ -62,6 +69,42 @@ func TestNewClient(t *testing.T) {
 
 	if client.headers["X-API-Key"] != "original" {
 		t.Fatalf("expected copied header value %q, got %q", "original", client.headers["X-API-Key"])
+	}
+}
+
+func TestNewClientUsesCustomHTTPClient(t *testing.T) {
+	customHTTPClient := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.String() != "https://api.example.com/users" {
+				t.Fatalf("expected URL https://api.example.com/users, got %s", req.URL.String())
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString("custom client")),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	client := NewClient(Config{
+		BaseURL:    "https://api.example.com",
+		Timeout:    5 * time.Second,
+		HTTPClient: customHTTPClient,
+	})
+
+	if client.httpClient != customHTTPClient {
+		t.Fatal("expected custom http client to be used")
+	}
+
+	body, err := client.Get(context.Background(), "/users")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if string(body) != "custom client" {
+		t.Fatalf("expected body custom client, got %q", string(body))
 	}
 }
 

@@ -11,6 +11,7 @@ Client HTTP simples em Go para consumir APIs com timeout, contexto, retries, hea
 - Exponential backoff entre tentativas.
 - Headers `Accept` e `Content-Type` configuraveis.
 - Headers personalizados, como `Authorization`, `X-API-Key`, `X-Client-ID`, etc.
+- Suporte a `*http.Client` customizado para certificados, proxy, mTLS e transportes especificos.
 - Atalhos para metodos HTTP comuns: `Get`, `Post`, `Put`, `Patch`, `Delete`, `Head` e `Options`.
 - Logger opcional para acompanhar tentativas e retries.
 
@@ -89,6 +90,7 @@ type Config struct {
 	Accept      string
 	ContentType string
 	Headers     map[string]string
+	HTTPClient  *http.Client
 }
 ```
 
@@ -211,6 +213,28 @@ Headers: map[string]string{
 }
 ```
 
+### `HTTPClient`
+
+Permite informar um `*http.Client` customizado.
+
+Use este campo quando precisar configurar certificado, proxy, mTLS, `Transport` customizado ou alguma politica especifica do Go para conexões HTTP.
+
+```go
+customHTTPClient := &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+	},
+}
+
+client := httpclient.NewClient(httpclient.Config{
+	BaseURL:    "https://api.example.com",
+	HTTPClient: customHTTPClient,
+})
+```
+
+Quando `HTTPClient` e informado, o campo `Timeout` do `Config` nao e aplicado automaticamente. Nesse caso, configure o timeout diretamente no `*http.Client` customizado.
+
 ## Retries
 
 O client tenta novamente quando ocorre erro de rede ou quando a API retorna estes status:
@@ -268,4 +292,4 @@ Exemplos de status que viram erro:
 - Respostas com status `2xx` sao consideradas sucesso.
 - Respostas fora da faixa `2xx` retornam `*httpclient.HTTPError`.
 - Para APIs HTTPS com certificado publico valido, o Go ja valida o certificado automaticamente.
-- Para certificados internos, self-signed ou mTLS, sera necessario evoluir a lib para aceitar um `*http.Client` customizado.
+- Para certificados internos, self-signed, proxy ou mTLS, use o campo `HTTPClient` com um `Transport` customizado.
