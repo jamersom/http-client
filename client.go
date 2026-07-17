@@ -86,7 +86,19 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte) 
 
 	defer resp.Body.Close()
 
-	return io.ReadAll(resp.Body)
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, &HTTPError{
+			StatusCode: resp.StatusCode,
+			Body:       responseBody,
+		}
+	}
+
+	return responseBody, nil
 }
 
 // Get executa uma chamada HTTP GET para o path informado.

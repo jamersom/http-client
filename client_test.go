@@ -274,6 +274,51 @@ func TestRequestUsesConfiguredHeaders(t *testing.T) {
 	}
 }
 
+func TestRequestReturnsHTTPErrorForNon2xxStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{BaseURL: server.URL})
+
+	body, err := client.Get(context.Background(), "/users")
+	if body != nil {
+		t.Fatalf("expected nil body, got %q", string(body))
+	}
+
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T: %v", err, err)
+	}
+
+	if httpErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, httpErr.StatusCode)
+	}
+
+	if string(httpErr.Body) != "unauthorized\n" {
+		t.Fatalf("expected body %q, got %q", "unauthorized\n", string(httpErr.Body))
+	}
+}
+
+func TestRequestAcceptsNoContentStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{BaseURL: server.URL})
+
+	body, err := client.Delete(context.Background(), "/users/1")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(body) != 0 {
+		t.Fatalf("expected empty body, got %q", string(body))
+	}
+}
+
 func TestHTTPVerbHelpers(t *testing.T) {
 	tests := []struct {
 		name       string

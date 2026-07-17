@@ -1,6 +1,6 @@
 # http-client
 
-Cliente HTTP simples em Go para consumir APIs com timeout, contexto, retries, headers padrao e headers personalizados.
+Client HTTP simples em Go para consumir APIs com timeout, contexto, retries, headers padrao e headers personalizados.
 
 ## Recursos
 
@@ -27,6 +27,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -51,6 +52,11 @@ func main() {
 
 	body, err := client.Get(ctx, "/users")
 	if err != nil {
+		var httpErr *httpclient.HTTPError
+		if errors.As(err, &httpErr) {
+			log.Fatalf("erro HTTP %d: %s", httpErr.StatusCode, string(httpErr.Body))
+		}
+
 		log.Fatal(err)
 	}
 
@@ -229,9 +235,37 @@ client.Head(ctx, "/users")
 client.Options(ctx, "/users")
 ```
 
+## Tratamento de Erros HTTP
+
+Quando a API responde com status fora da faixa `2xx`, o client retorna um `*httpclient.HTTPError`.
+
+```go
+body, err := client.Get(ctx, "/users")
+if err != nil {
+	var httpErr *httpclient.HTTPError
+	if errors.As(err, &httpErr) {
+		fmt.Printf("status: %d\n", httpErr.StatusCode)
+		fmt.Printf("body: %s\n", string(httpErr.Body))
+		return
+	}
+
+	log.Fatal(err)
+}
+
+fmt.Println(string(body))
+```
+
+Exemplos de status que viram erro:
+
+- `400 Bad Request`
+- `401 Unauthorized`
+- `404 Not Found`
+- `500 Internal Server Error`
+
 ## Observacoes
 
 - A biblioteca retorna o corpo da resposta como `[]byte`.
-- O status HTTP nao e convertido automaticamente em erro. Se a API retornar `401`, `404` ou outro status, o corpo ainda sera retornado quando nao houver erro de rede.
+- Respostas com status `2xx` sao consideradas sucesso.
+- Respostas fora da faixa `2xx` retornam `*httpclient.HTTPError`.
 - Para APIs HTTPS com certificado publico valido, o Go ja valida o certificado automaticamente.
 - Para certificados internos, self-signed ou mTLS, sera necessario evoluir a lib para aceitar um `*http.Client` customizado.
