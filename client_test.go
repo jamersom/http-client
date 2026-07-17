@@ -324,24 +324,10 @@ func TestHTTPVerbHelpers(t *testing.T) {
 			},
 		},
 		{
-			name:   "connect",
-			method: http.MethodConnect,
-			call: func(ctx context.Context, c *Client, path string, body []byte) ([]byte, error) {
-				return c.Connect(ctx, path)
-			},
-		},
-		{
 			name:   "options",
 			method: http.MethodOptions,
 			call: func(ctx context.Context, c *Client, path string, body []byte) ([]byte, error) {
 				return c.Options(ctx, path)
-			},
-		},
-		{
-			name:   "trace",
-			method: http.MethodTrace,
-			call: func(ctx context.Context, c *Client, path string, body []byte) ([]byte, error) {
-				return c.Trace(ctx, path)
 			},
 		},
 	}

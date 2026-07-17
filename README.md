@@ -11,7 +11,7 @@ Cliente HTTP simples em Go para consumir APIs com timeout, contexto, retries, he
 - Exponential backoff entre tentativas.
 - Headers `Accept` e `Content-Type` configuraveis.
 - Headers personalizados, como `Authorization`, `X-API-Key`, `X-Client-ID`, etc.
-- Atalhos para metodos HTTP comuns: `Get`, `Post`, `Put`, `Patch`, `Delete`, `Head`, `Options`, `Connect` e `Trace`.
+- Atalhos para metodos HTTP comuns: `Get`, `Post`, `Put`, `Patch`, `Delete`, `Head` e `Options`.
 - Logger opcional para acompanhar tentativas e retries.
 
 ## Instalacao
@@ -227,14 +227,6 @@ client.Patch(ctx, "/users/1", body)
 client.Delete(ctx, "/users/1")
 client.Head(ctx, "/users")
 client.Options(ctx, "/users")
-client.Connect(ctx, "/proxy")
-client.Trace(ctx, "/debug")
-```
-
-Tambem e possivel usar o metodo generico:
-
-```go
-client.Request(ctx, http.MethodGet, "/users", nil)
 ```
 
 ## Observacoes

@@ -70,11 +70,11 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-// Request executa uma chamada HTTP usando o metodo, path e body informados.
+// request executa uma chamada HTTP usando o metodo, path e body informados.
 //
 // A chamada respeita o contexto recebido, aplica a politica de retry configurada
 // no Client e retorna o corpo da resposta final como bytes.
-func (c *Client) Request(ctx context.Context, method, path string, body []byte) ([]byte, error) {
+func (c *Client) request(ctx context.Context, method, path string, body []byte) ([]byte, error) {
 	resp, err := c.doWithRetry(ctx, method, path, body)
 	if err != nil {
 		return nil, err
@@ -91,45 +91,35 @@ func (c *Client) Request(ctx context.Context, method, path string, body []byte) 
 
 // Get executa uma chamada HTTP GET para o path informado.
 func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
-	return c.Request(ctx, http.MethodGet, path, nil)
+	return c.request(ctx, http.MethodGet, path, nil)
 }
 
 // Head executa uma chamada HTTP HEAD para o path informado.
 func (c *Client) Head(ctx context.Context, path string) ([]byte, error) {
-	return c.Request(ctx, http.MethodHead, path, nil)
+	return c.request(ctx, http.MethodHead, path, nil)
 }
 
 // Post executa uma chamada HTTP POST para o path informado.
 func (c *Client) Post(ctx context.Context, path string, body []byte) ([]byte, error) {
-	return c.Request(ctx, http.MethodPost, path, body)
+	return c.request(ctx, http.MethodPost, path, body)
 }
 
 // Put executa uma chamada HTTP PUT para o path informado.
 func (c *Client) Put(ctx context.Context, path string, body []byte) ([]byte, error) {
-	return c.Request(ctx, http.MethodPut, path, body)
+	return c.request(ctx, http.MethodPut, path, body)
 }
 
 // Patch executa uma chamada HTTP PATCH para o path informado.
 func (c *Client) Patch(ctx context.Context, path string, body []byte) ([]byte, error) {
-	return c.Request(ctx, http.MethodPatch, path, body)
+	return c.request(ctx, http.MethodPatch, path, body)
 }
 
 // Delete executa uma chamada HTTP DELETE para o path informado.
 func (c *Client) Delete(ctx context.Context, path string) ([]byte, error) {
-	return c.Request(ctx, http.MethodDelete, path, nil)
-}
-
-// Connect executa uma chamada HTTP CONNECT para o path informado.
-func (c *Client) Connect(ctx context.Context, path string) ([]byte, error) {
-	return c.Request(ctx, http.MethodConnect, path, nil)
+	return c.request(ctx, http.MethodDelete, path, nil)
 }
 
 // Options executa uma chamada HTTP OPTIONS para o path informado.
 func (c *Client) Options(ctx context.Context, path string) ([]byte, error) {
-	return c.Request(ctx, http.MethodOptions, path, nil)
-}
-
-// Trace executa uma chamada HTTP TRACE para o path informado.
-func (c *Client) Trace(ctx context.Context, path string) ([]byte, error) {
-	return c.Request(ctx, http.MethodTrace, path, nil)
+	return c.request(ctx, http.MethodOptions, path, nil)
 }
