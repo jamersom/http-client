@@ -19,7 +19,7 @@ type Config struct {
 	Logger      *log.Logger
 	Accept      string
 	ContentType string
-	Token       string
+	Headers     map[string]string
 }
 
 // Client executa chamadas HTTP para uma API usando as regras de Config.
@@ -31,7 +31,7 @@ type Client struct {
 	logger      *log.Logger
 	accept      string
 	contentType string
-	token       string
+	headers     map[string]string
 }
 
 // NewClient cria uma instância de Client.
@@ -51,6 +51,11 @@ func NewClient(cfg Config) *Client {
 		contentType = jsonContentType
 	}
 
+	headers := make(map[string]string, len(cfg.Headers))
+	for key, value := range cfg.Headers {
+		headers[key] = value
+	}
+
 	return &Client{
 		baseURL:     cfg.BaseURL,
 		maxRetries:  cfg.MaxRetries,
@@ -58,7 +63,7 @@ func NewClient(cfg Config) *Client {
 		logger:      cfg.Logger,
 		accept:      accept,
 		contentType: contentType,
-		token:       cfg.Token,
+		headers:     headers,
 		httpClient: &http.Client{
 			Timeout: cfg.Timeout,
 		},

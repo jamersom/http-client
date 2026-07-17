@@ -20,9 +20,13 @@ func TestNewClient(t *testing.T) {
 		Logger:      log.New(io.Discard, "", 0),
 		Accept:      "text/plain",
 		ContentType: "text/plain",
+		Headers: map[string]string{
+			"X-API-Key": "original",
+		},
 	}
 
 	client := NewClient(cfg)
+	cfg.Headers["X-API-Key"] = "changed"
 
 	if client.baseURL != cfg.BaseURL {
 		t.Fatalf("expected baseURL %q, got %q", cfg.BaseURL, client.baseURL)
@@ -54,6 +58,10 @@ func TestNewClient(t *testing.T) {
 
 	if client.contentType != cfg.ContentType {
 		t.Fatalf("expected contentType %q, got %q", cfg.ContentType, client.contentType)
+	}
+
+	if client.headers["X-API-Key"] != "original" {
+		t.Fatalf("expected copied header value %q, got %q", "original", client.headers["X-API-Key"])
 	}
 }
 
@@ -219,8 +227,10 @@ func TestPostReusesBodyOnRetry(t *testing.T) {
 
 func TestRequestUsesConfiguredHeaders(t *testing.T) {
 	const (
-		accept      = "text/plain"
-		contentType = "text/plain"
+		accept        = "text/plain"
+		contentType   = "text/plain"
+		authorization = "Bearer 550e8400-e29b-41d4-a716-446655440000"
+		apiKey        = "550e8400-e29b-41d4-a716-446655440000"
 	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -232,6 +242,14 @@ func TestRequestUsesConfiguredHeaders(t *testing.T) {
 			t.Fatalf("expected Content-Type %q, got %q", contentType, got)
 		}
 
+		if got := r.Header.Get("Authorization"); got != authorization {
+			t.Fatalf("expected Authorization %q, got %q", authorization, got)
+		}
+
+		if got := r.Header.Get("X-API-Key"); got != apiKey {
+			t.Fatalf("expected X-API-Key %q, got %q", apiKey, got)
+		}
+
 		_, _ = io.WriteString(w, "ok")
 	}))
 	defer server.Close()
@@ -240,6 +258,10 @@ func TestRequestUsesConfiguredHeaders(t *testing.T) {
 		BaseURL:     server.URL,
 		Accept:      accept,
 		ContentType: contentType,
+		Headers: map[string]string{
+			"Authorization": authorization,
+			"X-API-Key":     apiKey,
+		},
 	})
 
 	body, err := client.Post(context.Background(), "messages", []byte("hello"))

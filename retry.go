@@ -61,8 +61,8 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 		req.Header.Set("Content-Type", c.contentType)
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	for key, value := range c.headers {
+		req.Header.Set(key, value)
 	}
 
 	return c.httpClient.Do(req)
