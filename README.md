@@ -65,6 +65,63 @@ func main() {
 }
 ```
 
+## Criando o Client
+
+Use `NewClient` passando um `httpclient.Config`.
+
+O unico campo obrigatorio e `BaseURL`. Os demais campos sao opcionais e podem ser configurados conforme a necessidade da API.
+
+```go
+client := httpclient.NewClient(httpclient.Config{
+	BaseURL: "https://api.example.com",
+
+	Timeout:    5 * time.Second,
+	MaxRetries: 3,
+	RetryDelay: 500 * time.Millisecond,
+
+	RetryMethods: []string{
+		http.MethodGet,
+		http.MethodHead,
+		http.MethodOptions,
+	},
+
+	RetryStatusCodes: []int{
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	},
+
+	Logger: log.Default(),
+
+	Accept:      "application/json",
+	ContentType: "application/json",
+
+	Headers: map[string]string{
+		"Authorization": "Bearer token",
+		"X-API-Key":     "api-key",
+		"X-Client-ID":   "client-id",
+	},
+})
+```
+
+Se precisar de certificado, proxy, mTLS ou `Transport` customizado, crie um `*http.Client` e informe em `HTTPClient`:
+
+```go
+customHTTPClient := &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+	},
+}
+
+client := httpclient.NewClient(httpclient.Config{
+	BaseURL:    "https://api.example.com",
+	HTTPClient: customHTTPClient,
+})
+```
+
 ## Exemplo com POST
 
 ```go
@@ -82,16 +139,17 @@ fmt.Println(string(resp))
 
 ```go
 type Config struct {
-	BaseURL     string
-	Timeout     time.Duration
-	MaxRetries  int
-	RetryDelay  time.Duration
-	Logger      *log.Logger
-	Accept      string
-	ContentType string
-	Headers     map[string]string
-	HTTPClient  *http.Client
-	RetryMethods []string
+	BaseURL          string
+	Timeout          time.Duration
+	MaxRetries       int
+	RetryDelay       time.Duration
+	Logger           *log.Logger
+	Accept           string
+	ContentType      string
+	Headers          map[string]string
+	HTTPClient       *http.Client
+	RetryMethods     []string
+	RetryStatusCodes []int
 }
 ```
 
@@ -188,6 +246,41 @@ Para desabilitar retries por metodo, informe uma lista vazia:
 RetryMethods: []string{}
 ```
 
+### `RetryStatusCodes`
+
+Define quais status HTTP podem disparar retry.
+
+Por padrao, estes status fazem retry:
+
+- `429 Too Many Requests`
+- `500 Internal Server Error`
+- `502 Bad Gateway`
+- `503 Service Unavailable`
+- `504 Gateway Timeout`
+
+Para usar outra lista, configure explicitamente:
+
+```go
+client := httpclient.NewClient(httpclient.Config{
+	BaseURL: "https://api.example.com",
+	MaxRetries: 3,
+	RetryDelay: 500 * time.Millisecond,
+	RetryStatusCodes: []int{
+		http.StatusConflict,
+		http.StatusTooManyRequests,
+		http.StatusServiceUnavailable,
+	},
+})
+```
+
+Para desabilitar retries baseados em status HTTP, informe uma lista vazia:
+
+```go
+RetryStatusCodes: []int{}
+```
+
+Erros de rede ainda podem ser repetidos quando o metodo da requisicao estiver permitido em `RetryMethods`.
+
 ### `Logger`
 
 Logger opcional para visualizar tentativas e retries.
@@ -282,7 +375,7 @@ O client tenta novamente quando ocorre erro de rede ou quando a API retorna este
 - `503 Service Unavailable`
 - `504 Gateway Timeout`
 
-Por padrao, retries acontecem apenas para `GET`, `HEAD` e `OPTIONS`. Para liberar retries em metodos como `POST`, configure `RetryMethods`.
+Por padrao, retries acontecem apenas para `GET`, `HEAD` e `OPTIONS`. Para liberar retries em metodos como `POST`, configure `RetryMethods`. Para alterar os status retryaveis, configure `RetryStatusCodes`.
 
 O retry respeita o `context.Context`. Se o contexto for cancelado ou atingir deadline, a espera entre retries e a requisicao sao interrompidas.
 

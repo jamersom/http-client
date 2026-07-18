@@ -82,6 +82,18 @@ func TestNewClient(t *testing.T) {
 			t.Fatalf("expected %s to not be retryable by default", method)
 		}
 	}
+
+	for _, statusCode := range []int{
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	} {
+		if _, ok := client.retryStatusCodes[statusCode]; !ok {
+			t.Fatalf("expected status %d to be retryable by default", statusCode)
+		}
+	}
 }
 
 func TestNewClientUsesCustomHTTPClient(t *testing.T) {
@@ -121,6 +133,8 @@ func TestNewClientUsesCustomHTTPClient(t *testing.T) {
 }
 
 func TestShouldRetry(t *testing.T) {
+	client := NewClient(Config{BaseURL: "https://api.example.com"})
+
 	tests := []struct {
 		name string
 		resp *http.Response
@@ -171,11 +185,92 @@ func TestShouldRetry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldRetry(tt.resp, tt.err)
+			got := client.shouldRetry(tt.resp, tt.err)
 			if got != tt.want {
 				t.Fatalf("expected %v, got %v", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestShouldRetryUsesConfiguredStatusCodes(t *testing.T) {
+	client := NewClient(Config{
+		BaseURL:          "https://api.example.com",
+		RetryStatusCodes: []int{http.StatusConflict},
+	})
+
+	if !client.shouldRetry(&http.Response{StatusCode: http.StatusConflict}, nil) {
+		t.Fatalf("expected status %d to be retryable", http.StatusConflict)
+	}
+
+	if client.shouldRetry(&http.Response{StatusCode: http.StatusServiceUnavailable}, nil) {
+		t.Fatalf("expected status %d to not be retryable", http.StatusServiceUnavailable)
+	}
+}
+
+func TestRetryStatusCodesCanDisableStatusRetries(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, "temporary error")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:          server.URL,
+		Timeout:          5 * time.Second,
+		MaxRetries:       3,
+		RetryDelay:       time.Millisecond,
+		RetryStatusCodes: []int{},
+	})
+
+	_, err := client.Get(context.Background(), "users")
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T: %v", err, err)
+	}
+
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", attempts)
+	}
+}
+
+func TestGetRetriesConfiguredStatusCode(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+
+		if attempts == 1 {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:          server.URL,
+		Timeout:          5 * time.Second,
+		MaxRetries:       1,
+		RetryDelay:       time.Millisecond,
+		RetryStatusCodes: []int{http.StatusConflict},
+	})
+
+	body, err := client.Get(context.Background(), "users")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if string(body) != "ok" {
+		t.Fatalf("expected body ok, got %q", string(body))
+	}
+
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
 	}
 }
 

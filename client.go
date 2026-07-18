@@ -78,19 +78,27 @@ type Config struct {
 	// avoids retrying non-idempotent methods such as POST, PUT, and PATCH unless
 	// explicitly configured. Use an empty slice to disable retries by method.
 	RetryMethods []string
+
+	// RetryStatusCodes defines which HTTP response status codes may be retried.
+	//
+	// When nil, the default retryable status codes are 429, 500, 502, 503, and
+	// 504. Network errors may still be retried when the request method is
+	// retryable. Use an empty slice to disable retries based on status codes.
+	RetryStatusCodes []int
 }
 
 // Client sends HTTP requests to an API using the rules defined by Config.
 type Client struct {
-	baseURL      string
-	maxRetries   int
-	retryDelay   time.Duration
-	logger       *log.Logger
-	accept       string
-	contentType  string
-	headers      map[string]string
-	httpClient   *http.Client
-	retryMethods map[string]struct{}
+	baseURL          string
+	maxRetries       int
+	retryDelay       time.Duration
+	logger           *log.Logger
+	accept           string
+	contentType      string
+	headers          map[string]string
+	httpClient       *http.Client
+	retryMethods     map[string]struct{}
+	retryStatusCodes map[int]struct{}
 }
 
 // NewClient creates a Client using cfg.
@@ -100,9 +108,10 @@ type Client struct {
 // so later changes to cfg.Headers do not affect the client, and uses either the
 // provided HTTPClient or a default *http.Client configured with Timeout.
 //
-// Retry behavior is controlled by MaxRetries, RetryDelay, and RetryMethods. By
-// default, only GET, HEAD, and OPTIONS are retried. Configure RetryMethods
-// explicitly to allow retries for methods such as POST, PUT, PATCH, or DELETE.
+// Retry behavior is controlled by MaxRetries, RetryDelay, RetryMethods, and
+// RetryStatusCodes. By default, only GET, HEAD, and OPTIONS are retried.
+// Configure RetryMethods explicitly to allow retries for methods such as POST,
+// PUT, PATCH, or DELETE.
 func NewClient(cfg Config) *Client {
 	accept := cfg.Accept
 	if accept == "" {
@@ -120,6 +129,7 @@ func NewClient(cfg Config) *Client {
 	}
 
 	retryMethods := makeRetryMethods(cfg.RetryMethods)
+	retryStatusCodes := makeRetryStatusCodes(cfg.RetryStatusCodes)
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
@@ -129,15 +139,16 @@ func NewClient(cfg Config) *Client {
 	}
 
 	return &Client{
-		baseURL:      cfg.BaseURL,
-		maxRetries:   cfg.MaxRetries,
-		retryDelay:   cfg.RetryDelay,
-		logger:       cfg.Logger,
-		accept:       accept,
-		contentType:  contentType,
-		headers:      headers,
-		httpClient:   httpClient,
-		retryMethods: retryMethods,
+		baseURL:          cfg.BaseURL,
+		maxRetries:       cfg.MaxRetries,
+		retryDelay:       cfg.RetryDelay,
+		logger:           cfg.Logger,
+		accept:           accept,
+		contentType:      contentType,
+		headers:          headers,
+		httpClient:       httpClient,
+		retryMethods:     retryMethods,
+		retryStatusCodes: retryStatusCodes,
 	}
 }
 

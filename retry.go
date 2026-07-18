@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// doWithRetry sends an HTTP request and retries while shouldRetry indicates the
-// error or response status code is retryable.
+// doWithRetry sends an HTTP request and retries while the error or response
+// status code is retryable.
 func (c *Client) doWithRetry(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
 	var (
 		resp *http.Response
@@ -27,7 +27,7 @@ func (c *Client) doWithRetry(ctx context.Context, method, path string, body []by
 		c.logformat("httpclient: attempt %d/%d %s %s", attempt+1, maxRetries+1, method, path)
 
 		resp, err = c.do(ctx, method, path, body)
-		if !shouldRetry(resp, err) || attempt == maxRetries {
+		if !c.shouldRetry(resp, err) || attempt == maxRetries {
 			return resp, err
 		}
 
@@ -100,21 +100,13 @@ func (c *Client) buildURL(path string) string {
 }
 
 // shouldRetry reports whether an HTTP request should be retried.
-func shouldRetry(resp *http.Response, err error) bool {
+func (c *Client) shouldRetry(resp *http.Response, err error) bool {
 	if err != nil {
 		return true
 	}
 
-	switch resp.StatusCode {
-	case http.StatusTooManyRequests,
-		http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout:
-		return true
-	}
-
-	return false
+	_, ok := c.retryStatusCodes[resp.StatusCode]
+	return ok
 }
 
 func makeRetryMethods(methods []string) map[string]struct{} {
@@ -132,6 +124,25 @@ func makeRetryMethods(methods []string) map[string]struct{} {
 	}
 
 	return retryMethods
+}
+
+func makeRetryStatusCodes(statusCodes []int) map[int]struct{} {
+	if statusCodes == nil {
+		statusCodes = []int{
+			http.StatusTooManyRequests,
+			http.StatusInternalServerError,
+			http.StatusBadGateway,
+			http.StatusServiceUnavailable,
+			http.StatusGatewayTimeout,
+		}
+	}
+
+	retryStatusCodes := make(map[int]struct{}, len(statusCodes))
+	for _, statusCode := range statusCodes {
+		retryStatusCodes[statusCode] = struct{}{}
+	}
+
+	return retryStatusCodes
 }
 
 func (c *Client) canRetryMethod(method string) bool {
