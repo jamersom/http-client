@@ -70,6 +70,18 @@ func TestNewClient(t *testing.T) {
 	if client.headers["X-API-Key"] != "original" {
 		t.Fatalf("expected copied header value %q, got %q", "original", client.headers["X-API-Key"])
 	}
+
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+		if !client.canRetryMethod(method) {
+			t.Fatalf("expected %s to be retryable by default", method)
+		}
+	}
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		if client.canRetryMethod(method) {
+			t.Fatalf("expected %s to not be retryable by default", method)
+		}
+	}
 }
 
 func TestNewClientUsesCustomHTTPClient(t *testing.T) {
@@ -214,7 +226,39 @@ func TestGetBuildsURLWithSingleSlash(t *testing.T) {
 	}
 }
 
-func TestPostReusesBodyOnRetry(t *testing.T) {
+func TestPostDoesNotRetryByDefault(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, "temporary error")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:    server.URL,
+		Timeout:    5 * time.Second,
+		MaxRetries: 3,
+		RetryDelay: time.Millisecond,
+	})
+
+	_, err := client.Post(context.Background(), "users", []byte(`{"name":"Joao"}`))
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T: %v", err, err)
+	}
+
+	if httpErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, httpErr.StatusCode)
+	}
+
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", attempts)
+	}
+}
+
+func TestPostRetriesWhenConfigured(t *testing.T) {
 	attempts := 0
 	wantBody := `{"name":"Joao"}`
 
@@ -248,10 +292,11 @@ func TestPostReusesBodyOnRetry(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(Config{
-		BaseURL:    server.URL,
-		Timeout:    5 * time.Second,
-		MaxRetries: 1,
-		RetryDelay: time.Millisecond,
+		BaseURL:      server.URL,
+		Timeout:      5 * time.Second,
+		MaxRetries:   1,
+		RetryDelay:   time.Millisecond,
+		RetryMethods: []string{http.MethodPost},
 	})
 
 	body, err := client.Post(context.Background(), "users", []byte(wantBody))
@@ -265,6 +310,71 @@ func TestPostReusesBodyOnRetry(t *testing.T) {
 
 	if attempts != 2 {
 		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+}
+
+func TestGetRetriesByDefault(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+
+		if attempts == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:    server.URL,
+		Timeout:    5 * time.Second,
+		MaxRetries: 1,
+		RetryDelay: time.Millisecond,
+	})
+
+	body, err := client.Get(context.Background(), "users")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if string(body) != "ok" {
+		t.Fatalf("expected body ok, got %q", string(body))
+	}
+
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+}
+
+func TestRetryMethodsCanDisableAllRetries(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, "temporary error")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:      server.URL,
+		Timeout:      5 * time.Second,
+		MaxRetries:   3,
+		RetryDelay:   time.Millisecond,
+		RetryMethods: []string{},
+	})
+
+	_, err := client.Get(context.Background(), "users")
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T: %v", err, err)
+	}
+
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", attempts)
 	}
 }
 

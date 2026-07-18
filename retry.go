@@ -8,25 +8,30 @@ import (
 	"time"
 )
 
-// doWithRetry executa a requisicao HTTP repetindo tentativas quando shouldRetry
-// indicar que o erro ou status code da resposta permite retry.
+// doWithRetry sends an HTTP request and retries while shouldRetry indicates the
+// error or response status code is retryable.
 func (c *Client) doWithRetry(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
 	var (
 		resp *http.Response
 		err  error
 	)
 
+	maxRetries := c.maxRetries
+	if !c.canRetryMethod(method) {
+		maxRetries = 0
+	}
+
 	delay := c.retryDelay
 
-	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		c.logformat("httpclient: attempt %d/%d %s %s", attempt+1, c.maxRetries+1, method, path)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		c.logformat("httpclient: attempt %d/%d %s %s", attempt+1, maxRetries+1, method, path)
 
 		resp, err = c.do(ctx, method, path, body)
-		if !shouldRetry(resp, err) || attempt == c.maxRetries {
+		if !shouldRetry(resp, err) || attempt == maxRetries {
 			return resp, err
 		}
 
-		c.logRetry(attempt, delay, resp, err)
+		c.logRetry(attempt, maxRetries, delay, resp, err)
 
 		if resp != nil {
 			resp.Body.Close()
@@ -42,7 +47,7 @@ func (c *Client) doWithRetry(ctx context.Context, method, path string, body []by
 	return resp, err
 }
 
-// do executa uma unica tentativa HTTP sem aplicar retry ou backoff.
+// do sends a single HTTP request attempt without retry or backoff.
 func (c *Client) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -68,19 +73,19 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 	return c.httpClient.Do(req)
 }
 
-// logRetry registra a tentativa de retry e o motivo da nova tentativa.
-func (c *Client) logRetry(attempt int, delay time.Duration, resp *http.Response, err error) {
+// logRetry logs the retry attempt and the reason for retrying.
+func (c *Client) logRetry(attempt, maxRetries int, delay time.Duration, resp *http.Response, err error) {
 	if err != nil {
-		c.logformat("httpclient: retry %d/%d in %s after error: %v", attempt+1, c.maxRetries, delay, err)
+		c.logformat("httpclient: retry %d/%d in %s after error: %v", attempt+1, maxRetries, delay, err)
 		return
 	}
 
 	if resp != nil {
-		c.logformat("httpclient: retry %d/%d in %s after status code: %d", attempt+1, c.maxRetries, delay, resp.StatusCode)
+		c.logformat("httpclient: retry %d/%d in %s after status code: %d", attempt+1, maxRetries, delay, resp.StatusCode)
 	}
 }
 
-// logformat registra mensagens da lib quando um logger foi configurado.
+// logformat writes library logs when a logger is configured.
 func (c *Client) logformat(format string, args ...any) {
 	if c.logger == nil {
 		return
@@ -89,12 +94,12 @@ func (c *Client) logformat(format string, args ...any) {
 	c.logger.Printf(format, args...)
 }
 
-// buildURL combina a URL base com o path mantendo uma unica barra entre eles.
+// buildURL combines the base URL and path with a single slash between them.
 func (c *Client) buildURL(path string) string {
 	return strings.TrimRight(c.baseURL, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
-// shouldRetry informa se uma chamada HTTP deve ser tentada novamente.
+// shouldRetry reports whether an HTTP request should be retried.
 func shouldRetry(resp *http.Response, err error) bool {
 	if err != nil {
 		return true
@@ -112,10 +117,32 @@ func shouldRetry(resp *http.Response, err error) bool {
 	return false
 }
 
-// waitBackoff aguarda o intervalo informado antes da proxima tentativa.
+func makeRetryMethods(methods []string) map[string]struct{} {
+	if methods == nil {
+		methods = []string{
+			http.MethodGet,
+			http.MethodHead,
+			http.MethodOptions,
+		}
+	}
+
+	retryMethods := make(map[string]struct{}, len(methods))
+	for _, method := range methods {
+		retryMethods[strings.ToUpper(method)] = struct{}{}
+	}
+
+	return retryMethods
+}
+
+func (c *Client) canRetryMethod(method string) bool {
+	_, ok := c.retryMethods[strings.ToUpper(method)]
+	return ok
+}
+
+// waitBackoff waits for the provided delay before the next retry attempt.
 //
-// A espera tambem respeita o contexto, retornando imediatamente quando ele for
-// cancelado ou atingir timeout.
+// The wait also respects the context and returns immediately when the context
+// is canceled or reaches its deadline.
 func waitBackoff(ctx context.Context, delay time.Duration) error {
 	select {
 	case <-time.After(delay):
@@ -125,7 +152,7 @@ func waitBackoff(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// nextBackoff calcula o proximo intervalo usando exponential backoff.
+// nextBackoff calculates the next delay using exponential backoff.
 func nextBackoff(delay time.Duration) time.Duration {
 	return delay * 2
 }

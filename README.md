@@ -91,6 +91,7 @@ type Config struct {
 	ContentType string
 	Headers     map[string]string
 	HTTPClient  *http.Client
+	RetryMethods []string
 }
 ```
 
@@ -150,6 +151,42 @@ RetryDelay: 500 * time.Millisecond
 ```
 
 O intervalo usa exponential backoff. Por exemplo, com `500ms`, as proximas esperas serao `1s`, `2s`, e assim por diante.
+
+### `RetryMethods`
+
+Define quais metodos HTTP podem ser repetidos automaticamente em caso de erro temporario.
+
+Por padrao, apenas metodos considerados seguros fazem retry:
+
+```go
+GET
+HEAD
+OPTIONS
+```
+
+Isso evita repetir automaticamente chamadas como `POST`, `PUT` e `PATCH`, que podem criar, alterar ou duplicar dados no servidor.
+
+Para permitir retry em outro metodo, configure explicitamente:
+
+```go
+client := httpclient.NewClient(httpclient.Config{
+	BaseURL: "https://api.example.com",
+	MaxRetries: 3,
+	RetryDelay: 500 * time.Millisecond,
+	RetryMethods: []string{
+		http.MethodGet,
+		http.MethodHead,
+		http.MethodOptions,
+		http.MethodPost,
+	},
+})
+```
+
+Para desabilitar retries por metodo, informe uma lista vazia:
+
+```go
+RetryMethods: []string{}
+```
 
 ### `Logger`
 
@@ -244,6 +281,8 @@ O client tenta novamente quando ocorre erro de rede ou quando a API retorna este
 - `502 Bad Gateway`
 - `503 Service Unavailable`
 - `504 Gateway Timeout`
+
+Por padrao, retries acontecem apenas para `GET`, `HEAD` e `OPTIONS`. Para liberar retries em metodos como `POST`, configure `RetryMethods`.
 
 O retry respeita o `context.Context`. Se o contexto for cancelado ou atingir deadline, a espera entre retries e a requisicao sao interrompidas.
 

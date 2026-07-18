@@ -10,37 +10,99 @@ import (
 
 const jsonContentType = "application/json"
 
-// Config define as configurações usadas para criar um Client.
+// Config defines the settings used by NewClient.
 type Config struct {
-	BaseURL     string
-	Timeout     time.Duration
-	MaxRetries  int
-	RetryDelay  time.Duration
-	Logger      *log.Logger
-	Accept      string
+	// BaseURL is the base address used to build requests.
+	//
+	// Example:
+	//
+	//	BaseURL: "https://api.example.com"
+	//
+	// Paths passed to methods such as Get and Post may include or omit the
+	// leading slash. Both "users" and "/users" become
+	// "https://api.example.com/users".
+	BaseURL string
+
+	// Timeout is applied to the default http.Client created by NewClient.
+	//
+	// This field is ignored when HTTPClient is provided. In that case, configure
+	// the timeout directly in the custom *http.Client.
+	Timeout time.Duration
+
+	// MaxRetries is the maximum number of retry attempts after the first request.
+	//
+	// For example, MaxRetries: 3 may execute up to 4 attempts total: the first
+	// request plus 3 retries. Retries only happen for methods allowed by
+	// RetryMethods and for retryable network errors or status codes.
+	MaxRetries int
+
+	// RetryDelay is the initial wait time before the first retry.
+	//
+	// The delay is increased with exponential backoff after each failed attempt.
+	RetryDelay time.Duration
+
+	// Logger receives optional retry and attempt logs.
+	//
+	// When Logger is nil, the client does not write logs.
+	Logger *log.Logger
+
+	// Accept sets the Accept header for every request.
+	//
+	// When empty, it defaults to "application/json".
+	Accept string
+
+	// ContentType sets the Content-Type header for requests with a body.
+	//
+	// When empty, it defaults to "application/json". The header is only sent
+	// when the request body is not empty.
 	ContentType string
-	Headers     map[string]string
-	HTTPClient  *http.Client
+
+	// Headers defines additional headers sent with every request.
+	//
+	// Use this field for authentication and custom headers such as
+	// Authorization, X-API-Key, X-Client-ID, tenant IDs, trace IDs, and similar
+	// values. Headers are applied after Accept and ContentType, so entries such
+	// as "Accept" or "Content-Type" in this map override those fields.
+	Headers map[string]string
+
+	// HTTPClient allows using a custom *http.Client.
+	//
+	// Use this field for custom TLS settings, mTLS, proxies, transports,
+	// redirects, cookies, or tests with a fake RoundTripper. When HTTPClient is
+	// nil, NewClient creates a default *http.Client using Timeout.
+	HTTPClient *http.Client
+
+	// RetryMethods defines which HTTP methods may be retried.
+	//
+	// When nil, the default retryable methods are GET, HEAD, and OPTIONS. This
+	// avoids retrying non-idempotent methods such as POST, PUT, and PATCH unless
+	// explicitly configured. Use an empty slice to disable retries by method.
+	RetryMethods []string
 }
 
-// Client executa chamadas HTTP para uma API usando as regras de Config.
+// Client sends HTTP requests to an API using the rules defined by Config.
 type Client struct {
-	baseURL     string
-	maxRetries  int
-	retryDelay  time.Duration
-	logger      *log.Logger
-	accept      string
-	contentType string
-	headers     map[string]string
-	httpClient  *http.Client
+	baseURL      string
+	maxRetries   int
+	retryDelay   time.Duration
+	logger       *log.Logger
+	accept       string
+	contentType  string
+	headers      map[string]string
+	httpClient   *http.Client
+	retryMethods map[string]struct{}
 }
 
-// NewClient cria uma instância de Client.
+// NewClient creates a Client using cfg.
 //
-// O cfg informa a URL base, o timeout HTTP, a quantidade máxima de tentativas
-// e o intervalo inicial entre retries.
+// The returned client uses BaseURL to build request URLs, applies default
+// Accept and Content-Type headers when they are not configured, copies Headers
+// so later changes to cfg.Headers do not affect the client, and uses either the
+// provided HTTPClient or a default *http.Client configured with Timeout.
 //
-// Retorna um Client pronto para fazer chamadas HTTP para a API configurada.
+// Retry behavior is controlled by MaxRetries, RetryDelay, and RetryMethods. By
+// default, only GET, HEAD, and OPTIONS are retried. Configure RetryMethods
+// explicitly to allow retries for methods such as POST, PUT, PATCH, or DELETE.
 func NewClient(cfg Config) *Client {
 	accept := cfg.Accept
 	if accept == "" {
@@ -57,6 +119,8 @@ func NewClient(cfg Config) *Client {
 		headers[key] = value
 	}
 
+	retryMethods := makeRetryMethods(cfg.RetryMethods)
+
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{
@@ -65,21 +129,22 @@ func NewClient(cfg Config) *Client {
 	}
 
 	return &Client{
-		baseURL:     cfg.BaseURL,
-		maxRetries:  cfg.MaxRetries,
-		retryDelay:  cfg.RetryDelay,
-		logger:      cfg.Logger,
-		accept:      accept,
-		contentType: contentType,
-		headers:     headers,
-		httpClient:  httpClient,
+		baseURL:      cfg.BaseURL,
+		maxRetries:   cfg.MaxRetries,
+		retryDelay:   cfg.RetryDelay,
+		logger:       cfg.Logger,
+		accept:       accept,
+		contentType:  contentType,
+		headers:      headers,
+		httpClient:   httpClient,
+		retryMethods: retryMethods,
 	}
 }
 
-// request executa uma chamada HTTP usando o metodo, path e body informados.
+// request sends an HTTP request using the provided method, path, and body.
 //
-// A chamada respeita o contexto recebido, aplica a politica de retry configurada
-// no Client e retorna o corpo da resposta final como bytes.
+// The request respects the provided context, applies the configured retry
+// policy, and returns the final response body as bytes.
 func (c *Client) request(ctx context.Context, method, path string, body []byte) ([]byte, error) {
 	resp, err := c.doWithRetry(ctx, method, path, body)
 	if err != nil {
@@ -107,37 +172,37 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte) 
 	return responseBody, nil
 }
 
-// Get executa uma chamada HTTP GET para o path informado.
+// Get sends an HTTP GET request to path.
 func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 	return c.request(ctx, http.MethodGet, path, nil)
 }
 
-// Head executa uma chamada HTTP HEAD para o path informado.
+// Head sends an HTTP HEAD request to path.
 func (c *Client) Head(ctx context.Context, path string) ([]byte, error) {
 	return c.request(ctx, http.MethodHead, path, nil)
 }
 
-// Post executa uma chamada HTTP POST para o path informado.
+// Post sends an HTTP POST request to path with body.
 func (c *Client) Post(ctx context.Context, path string, body []byte) ([]byte, error) {
 	return c.request(ctx, http.MethodPost, path, body)
 }
 
-// Put executa uma chamada HTTP PUT para o path informado.
+// Put sends an HTTP PUT request to path with body.
 func (c *Client) Put(ctx context.Context, path string, body []byte) ([]byte, error) {
 	return c.request(ctx, http.MethodPut, path, body)
 }
 
-// Patch executa uma chamada HTTP PATCH para o path informado.
+// Patch sends an HTTP PATCH request to path with body.
 func (c *Client) Patch(ctx context.Context, path string, body []byte) ([]byte, error) {
 	return c.request(ctx, http.MethodPatch, path, body)
 }
 
-// Delete executa uma chamada HTTP DELETE para o path informado.
+// Delete sends an HTTP DELETE request to path.
 func (c *Client) Delete(ctx context.Context, path string) ([]byte, error) {
 	return c.request(ctx, http.MethodDelete, path, nil)
 }
 
-// Options executa uma chamada HTTP OPTIONS para o path informado.
+// Options sends an HTTP OPTIONS request to path.
 func (c *Client) Options(ctx context.Context, path string) ([]byte, error) {
 	return c.request(ctx, http.MethodOptions, path, nil)
 }
