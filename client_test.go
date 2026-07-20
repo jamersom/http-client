@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -10,6 +11,12 @@ import (
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
 
 func TestNewClient(t *testing.T) {
 	cfg := Config{
@@ -63,9 +70,71 @@ func TestNewClient(t *testing.T) {
 	if client.headers["X-API-Key"] != "original" {
 		t.Fatalf("expected copied header value %q, got %q", "original", client.headers["X-API-Key"])
 	}
+
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+		if !client.canRetryMethod(method) {
+			t.Fatalf("expected %s to be retryable by default", method)
+		}
+	}
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		if client.canRetryMethod(method) {
+			t.Fatalf("expected %s to not be retryable by default", method)
+		}
+	}
+
+	for _, statusCode := range []int{
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	} {
+		if _, ok := client.retryStatusCodes[statusCode]; !ok {
+			t.Fatalf("expected status %d to be retryable by default", statusCode)
+		}
+	}
+}
+
+func TestNewClientUsesCustomHTTPClient(t *testing.T) {
+	customHTTPClient := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.String() != "https://api.example.com/users" {
+				t.Fatalf("expected URL https://api.example.com/users, got %s", req.URL.String())
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString("custom client")),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	client := NewClient(Config{
+		BaseURL:    "https://api.example.com",
+		Timeout:    5 * time.Second,
+		HTTPClient: customHTTPClient,
+	})
+
+	if client.httpClient != customHTTPClient {
+		t.Fatal("expected custom http client to be used")
+	}
+
+	body, err := client.Get(context.Background(), "/users")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if string(body) != "custom client" {
+		t.Fatalf("expected body custom client, got %q", string(body))
+	}
 }
 
 func TestShouldRetry(t *testing.T) {
+	client := NewClient(Config{BaseURL: "https://api.example.com"})
+
 	tests := []struct {
 		name string
 		resp *http.Response
@@ -116,11 +185,92 @@ func TestShouldRetry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldRetry(tt.resp, tt.err)
+			got := client.shouldRetry(tt.resp, tt.err)
 			if got != tt.want {
 				t.Fatalf("expected %v, got %v", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestShouldRetryUsesConfiguredStatusCodes(t *testing.T) {
+	client := NewClient(Config{
+		BaseURL:          "https://api.example.com",
+		RetryStatusCodes: []int{http.StatusConflict},
+	})
+
+	if !client.shouldRetry(&http.Response{StatusCode: http.StatusConflict}, nil) {
+		t.Fatalf("expected status %d to be retryable", http.StatusConflict)
+	}
+
+	if client.shouldRetry(&http.Response{StatusCode: http.StatusServiceUnavailable}, nil) {
+		t.Fatalf("expected status %d to not be retryable", http.StatusServiceUnavailable)
+	}
+}
+
+func TestRetryStatusCodesCanDisableStatusRetries(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, "temporary error")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:          server.URL,
+		Timeout:          5 * time.Second,
+		MaxRetries:       3,
+		RetryDelay:       time.Millisecond,
+		RetryStatusCodes: []int{},
+	})
+
+	_, err := client.Get(context.Background(), "users")
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T: %v", err, err)
+	}
+
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", attempts)
+	}
+}
+
+func TestGetRetriesConfiguredStatusCode(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+
+		if attempts == 1 {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:          server.URL,
+		Timeout:          5 * time.Second,
+		MaxRetries:       1,
+		RetryDelay:       time.Millisecond,
+		RetryStatusCodes: []int{http.StatusConflict},
+	})
+
+	body, err := client.Get(context.Background(), "users")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if string(body) != "ok" {
+		t.Fatalf("expected body ok, got %q", string(body))
+	}
+
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
 	}
 }
 
@@ -171,7 +321,39 @@ func TestGetBuildsURLWithSingleSlash(t *testing.T) {
 	}
 }
 
-func TestPostReusesBodyOnRetry(t *testing.T) {
+func TestPostDoesNotRetryByDefault(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, "temporary error")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:    server.URL,
+		Timeout:    5 * time.Second,
+		MaxRetries: 3,
+		RetryDelay: time.Millisecond,
+	})
+
+	_, err := client.Post(context.Background(), "users", []byte(`{"name":"Joao"}`))
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T: %v", err, err)
+	}
+
+	if httpErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, httpErr.StatusCode)
+	}
+
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", attempts)
+	}
+}
+
+func TestPostRetriesWhenConfigured(t *testing.T) {
 	attempts := 0
 	wantBody := `{"name":"Joao"}`
 
@@ -205,10 +387,11 @@ func TestPostReusesBodyOnRetry(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(Config{
-		BaseURL:    server.URL,
-		Timeout:    5 * time.Second,
-		MaxRetries: 1,
-		RetryDelay: time.Millisecond,
+		BaseURL:      server.URL,
+		Timeout:      5 * time.Second,
+		MaxRetries:   1,
+		RetryDelay:   time.Millisecond,
+		RetryMethods: []string{http.MethodPost},
 	})
 
 	body, err := client.Post(context.Background(), "users", []byte(wantBody))
@@ -222,6 +405,71 @@ func TestPostReusesBodyOnRetry(t *testing.T) {
 
 	if attempts != 2 {
 		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+}
+
+func TestGetRetriesByDefault(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+
+		if attempts == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:    server.URL,
+		Timeout:    5 * time.Second,
+		MaxRetries: 1,
+		RetryDelay: time.Millisecond,
+	})
+
+	body, err := client.Get(context.Background(), "users")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if string(body) != "ok" {
+		t.Fatalf("expected body ok, got %q", string(body))
+	}
+
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+}
+
+func TestRetryMethodsCanDisableAllRetries(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, "temporary error")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:      server.URL,
+		Timeout:      5 * time.Second,
+		MaxRetries:   3,
+		RetryDelay:   time.Millisecond,
+		RetryMethods: []string{},
+	})
+
+	_, err := client.Get(context.Background(), "users")
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T: %v", err, err)
+	}
+
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", attempts)
 	}
 }
 
@@ -271,6 +519,51 @@ func TestRequestUsesConfiguredHeaders(t *testing.T) {
 
 	if string(body) != "ok" {
 		t.Fatalf("expected body ok, got %q", string(body))
+	}
+}
+
+func TestRequestReturnsHTTPErrorForNon2xxStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{BaseURL: server.URL})
+
+	body, err := client.Get(context.Background(), "/users")
+	if body != nil {
+		t.Fatalf("expected nil body, got %q", string(body))
+	}
+
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T: %v", err, err)
+	}
+
+	if httpErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, httpErr.StatusCode)
+	}
+
+	if string(httpErr.Body) != "unauthorized\n" {
+		t.Fatalf("expected body %q, got %q", "unauthorized\n", string(httpErr.Body))
+	}
+}
+
+func TestRequestAcceptsNoContentStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{BaseURL: server.URL})
+
+	body, err := client.Delete(context.Background(), "/users/1")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(body) != 0 {
+		t.Fatalf("expected empty body, got %q", string(body))
 	}
 }
 
@@ -324,24 +617,10 @@ func TestHTTPVerbHelpers(t *testing.T) {
 			},
 		},
 		{
-			name:   "connect",
-			method: http.MethodConnect,
-			call: func(ctx context.Context, c *Client, path string, body []byte) ([]byte, error) {
-				return c.Connect(ctx, path)
-			},
-		},
-		{
 			name:   "options",
 			method: http.MethodOptions,
 			call: func(ctx context.Context, c *Client, path string, body []byte) ([]byte, error) {
 				return c.Options(ctx, path)
-			},
-		},
-		{
-			name:   "trace",
-			method: http.MethodTrace,
-			call: func(ctx context.Context, c *Client, path string, body []byte) ([]byte, error) {
-				return c.Trace(ctx, path)
 			},
 		},
 	}
