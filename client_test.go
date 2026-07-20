@@ -18,21 +18,33 @@ func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
 }
 
+func mustNewClient(t *testing.T, cfg Config) *Client {
+	t.Helper()
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("expected valid client config, got %v", err)
+	}
+
+	return client
+}
+
 func TestNewClient(t *testing.T) {
 	cfg := Config{
-		BaseURL:     "https://api.example.com",
-		Timeout:     5 * time.Second,
-		MaxRetries:  3,
-		RetryDelay:  100 * time.Millisecond,
-		Logger:      log.New(io.Discard, "", 0),
-		Accept:      "text/plain",
-		ContentType: "text/plain",
+		BaseURL:             "https://api.example.com",
+		Timeout:             5 * time.Second,
+		MaxRetries:          3,
+		RetryDelay:          100 * time.Millisecond,
+		Logger:              log.New(io.Discard, "", 0),
+		Accept:              "text/plain",
+		ContentType:         "text/plain",
+		MaxResponseBodySize: 1024,
 		Headers: map[string]string{
 			"X-API-Key": "original",
 		},
 	}
 
-	client := NewClient(cfg)
+	client := mustNewClient(t, cfg)
 	cfg.Headers["X-API-Key"] = "changed"
 
 	if client.baseURL != cfg.BaseURL {
@@ -67,6 +79,10 @@ func TestNewClient(t *testing.T) {
 		t.Fatalf("expected contentType %q, got %q", cfg.ContentType, client.contentType)
 	}
 
+	if client.maxResponseBodySize != cfg.MaxResponseBodySize {
+		t.Fatalf("expected maxResponseBodySize %d, got %d", cfg.MaxResponseBodySize, client.maxResponseBodySize)
+	}
+
 	if client.headers["X-API-Key"] != "original" {
 		t.Fatalf("expected copied header value %q, got %q", "original", client.headers["X-API-Key"])
 	}
@@ -96,6 +112,61 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestNewClientValidatesBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		wantErr error
+	}{
+		{
+			name:    "empty",
+			baseURL: "",
+			wantErr: ErrEmptyBaseURL,
+		},
+		{
+			name:    "blank",
+			baseURL: "   ",
+			wantErr: ErrEmptyBaseURL,
+		},
+		{
+			name:    "missing scheme",
+			baseURL: "api.example.com",
+			wantErr: ErrInvalidBaseURL,
+		},
+		{
+			name:    "missing host",
+			baseURL: "https://",
+			wantErr: ErrInvalidBaseURL,
+		},
+		{
+			name:    "unsupported scheme",
+			baseURL: "ftp://api.example.com",
+			wantErr: ErrInvalidBaseURL,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := NewClient(Config{BaseURL: tt.baseURL})
+			if client != nil {
+				t.Fatalf("expected nil client, got %#v", client)
+			}
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestNewClientNormalizesBaseURL(t *testing.T) {
+	client := mustNewClient(t, Config{BaseURL: " https://api.example.com/ "})
+
+	if client.baseURL != "https://api.example.com" {
+		t.Fatalf("expected normalized baseURL %q, got %q", "https://api.example.com", client.baseURL)
+	}
+}
+
 func TestNewClientUsesCustomHTTPClient(t *testing.T) {
 	customHTTPClient := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -112,7 +183,7 @@ func TestNewClientUsesCustomHTTPClient(t *testing.T) {
 		}),
 	}
 
-	client := NewClient(Config{
+	client := mustNewClient(t, Config{
 		BaseURL:    "https://api.example.com",
 		Timeout:    5 * time.Second,
 		HTTPClient: customHTTPClient,
@@ -133,7 +204,7 @@ func TestNewClientUsesCustomHTTPClient(t *testing.T) {
 }
 
 func TestShouldRetry(t *testing.T) {
-	client := NewClient(Config{BaseURL: "https://api.example.com"})
+	client := mustNewClient(t, Config{BaseURL: "https://api.example.com"})
 
 	tests := []struct {
 		name string
@@ -194,7 +265,7 @@ func TestShouldRetry(t *testing.T) {
 }
 
 func TestShouldRetryUsesConfiguredStatusCodes(t *testing.T) {
-	client := NewClient(Config{
+	client := mustNewClient(t, Config{
 		BaseURL:          "https://api.example.com",
 		RetryStatusCodes: []int{http.StatusConflict},
 	})
@@ -218,7 +289,7 @@ func TestRetryStatusCodesCanDisableStatusRetries(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{
+	client := mustNewClient(t, Config{
 		BaseURL:          server.URL,
 		Timeout:          5 * time.Second,
 		MaxRetries:       3,
@@ -252,7 +323,7 @@ func TestGetRetriesConfiguredStatusCode(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{
+	client := mustNewClient(t, Config{
 		BaseURL:          server.URL,
 		Timeout:          5 * time.Second,
 		MaxRetries:       1,
@@ -304,7 +375,7 @@ func TestGetBuildsURLWithSingleSlash(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClient(Config{
+			client := mustNewClient(t, Config{
 				BaseURL: server.URL,
 				Timeout: 5 * time.Second,
 			})
@@ -331,7 +402,7 @@ func TestPostDoesNotRetryByDefault(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{
+	client := mustNewClient(t, Config{
 		BaseURL:    server.URL,
 		Timeout:    5 * time.Second,
 		MaxRetries: 3,
@@ -386,7 +457,7 @@ func TestPostRetriesWhenConfigured(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{
+	client := mustNewClient(t, Config{
 		BaseURL:      server.URL,
 		Timeout:      5 * time.Second,
 		MaxRetries:   1,
@@ -423,7 +494,7 @@ func TestGetRetriesByDefault(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{
+	client := mustNewClient(t, Config{
 		BaseURL:    server.URL,
 		Timeout:    5 * time.Second,
 		MaxRetries: 1,
@@ -454,7 +525,7 @@ func TestRetryMethodsCanDisableAllRetries(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{
+	client := mustNewClient(t, Config{
 		BaseURL:      server.URL,
 		Timeout:      5 * time.Second,
 		MaxRetries:   3,
@@ -502,7 +573,7 @@ func TestRequestUsesConfiguredHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{
+	client := mustNewClient(t, Config{
 		BaseURL:     server.URL,
 		Accept:      accept,
 		ContentType: contentType,
@@ -528,7 +599,7 @@ func TestRequestReturnsHTTPErrorForNon2xxStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{BaseURL: server.URL})
+	client := mustNewClient(t, Config{BaseURL: server.URL})
 
 	body, err := client.Get(context.Background(), "/users")
 	if body != nil {
@@ -555,7 +626,7 @@ func TestRequestAcceptsNoContentStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{BaseURL: server.URL})
+	client := mustNewClient(t, Config{BaseURL: server.URL})
 
 	body, err := client.Delete(context.Background(), "/users/1")
 	if err != nil {
@@ -564,6 +635,73 @@ func TestRequestAcceptsNoContentStatus(t *testing.T) {
 
 	if len(body) != 0 {
 		t.Fatalf("expected empty body, got %q", string(body))
+	}
+}
+
+func TestRequestAllowsResponseBodyWithinLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "hello")
+	}))
+	defer server.Close()
+
+	client := mustNewClient(t, Config{
+		BaseURL:             server.URL,
+		MaxResponseBodySize: 5,
+	})
+
+	body, err := client.Get(context.Background(), "/message")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if string(body) != "hello" {
+		t.Fatalf("expected body hello, got %q", string(body))
+	}
+}
+
+func TestRequestReturnsErrorWhenResponseBodyExceedsLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "too large")
+	}))
+	defer server.Close()
+
+	client := mustNewClient(t, Config{
+		BaseURL:             server.URL,
+		MaxResponseBodySize: 3,
+	})
+
+	body, err := client.Get(context.Background(), "/message")
+	if body != nil {
+		t.Fatalf("expected nil body, got %q", string(body))
+	}
+
+	var bodyErr *ResponseBodyTooLargeError
+	if !errors.As(err, &bodyErr) {
+		t.Fatalf("expected ResponseBodyTooLargeError, got %T: %v", err, err)
+	}
+
+	if bodyErr.MaxSize != 3 {
+		t.Fatalf("expected max size 3, got %d", bodyErr.MaxSize)
+	}
+}
+
+func TestRequestReturnsBodyLimitErrorBeforeHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, "error body")
+	}))
+	defer server.Close()
+
+	client := mustNewClient(t, Config{
+		BaseURL:             server.URL,
+		MaxResponseBodySize: 5,
+	})
+
+	_, err := client.Get(context.Background(), "/message")
+
+	var bodyErr *ResponseBodyTooLargeError
+	if !errors.As(err, &bodyErr) {
+		t.Fatalf("expected ResponseBodyTooLargeError, got %T: %v", err, err)
 	}
 }
 
@@ -659,7 +797,7 @@ func TestHTTPVerbHelpers(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClient(Config{BaseURL: server.URL})
+			client := mustNewClient(t, Config{BaseURL: server.URL})
 
 			body, err := tt.call(context.Background(), client, "users/1", tt.body)
 			if err != nil {

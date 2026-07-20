@@ -12,6 +12,7 @@ Client HTTP simples em Go para consumir APIs com timeout, contexto, retries, hea
 - Headers `Accept` e `Content-Type` configuraveis.
 - Headers personalizados, como `Authorization`, `X-API-Key`, `X-Client-ID`, etc.
 - Suporte a `*http.Client` customizado para certificados, proxy, mTLS e transportes especificos.
+- Limite configuravel para tamanho maximo do response body.
 - Atalhos para metodos HTTP comuns: `Get`, `Post`, `Put`, `Patch`, `Delete`, `Head` e `Options`.
 - Logger opcional para acompanhar tentativas e retries.
 
@@ -37,17 +38,21 @@ import (
 )
 
 func main() {
-	client := httpclient.NewClient(httpclient.Config{
-		BaseURL:    "http://localhost:8080",
-		Timeout:    5 * time.Second,
-		MaxRetries: 3,
-		RetryDelay: 500 * time.Millisecond,
-		Logger:     log.Default(),
+	client, err := httpclient.NewClient(httpclient.Config{
+		BaseURL:             "http://localhost:8080",
+		Timeout:             5 * time.Second,
+		MaxRetries:          3,
+		RetryDelay:          500 * time.Millisecond,
+		MaxResponseBodySize: 1024 * 1024,
+		Logger:              log.Default(),
 		Headers: map[string]string{
 			"Authorization": "Bearer 550e8400-e29b-41d4-a716-446655440000",
 			"X-API-Key":     "550e8400-e29b-41d4-a716-446655440000",
 		},
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctx := context.Background()
 
@@ -67,17 +72,18 @@ func main() {
 
 ## Criando o Client
 
-Use `NewClient` passando um `httpclient.Config`.
+Use `NewClient` passando um `httpclient.Config`. A funcao retorna `(*Client, error)`.
 
 O unico campo obrigatorio e `BaseURL`. Os demais campos sao opcionais e podem ser configurados conforme a necessidade da API.
 
 ```go
-client := httpclient.NewClient(httpclient.Config{
+client, err := httpclient.NewClient(httpclient.Config{
 	BaseURL: "https://api.example.com",
 
 	Timeout:    5 * time.Second,
 	MaxRetries: 3,
 	RetryDelay: 500 * time.Millisecond,
+	MaxResponseBodySize: 1024 * 1024,
 
 	RetryMethods: []string{
 		http.MethodGet,
@@ -104,6 +110,9 @@ client := httpclient.NewClient(httpclient.Config{
 		"X-Client-ID":   "client-id",
 	},
 })
+if err != nil {
+	log.Fatal(err)
+}
 ```
 
 Se precisar de certificado, proxy, mTLS ou `Transport` customizado, crie um `*http.Client` e informe em `HTTPClient`:
@@ -116,10 +125,13 @@ customHTTPClient := &http.Client{
 	},
 }
 
-client := httpclient.NewClient(httpclient.Config{
+client, err := httpclient.NewClient(httpclient.Config{
 	BaseURL:    "https://api.example.com",
 	HTTPClient: customHTTPClient,
 })
+if err != nil {
+	log.Fatal(err)
+}
 ```
 
 ## Exemplo com POST
@@ -150,6 +162,7 @@ type Config struct {
 	HTTPClient       *http.Client
 	RetryMethods     []string
 	RetryStatusCodes []int
+	MaxResponseBodySize int64
 }
 ```
 
@@ -163,6 +176,17 @@ Exemplo:
 
 ```go
 BaseURL: "https://api.example.com"
+```
+
+`BaseURL` e validada no `NewClient`. Se estiver vazia, invalida, sem host ou com scheme diferente de `http`/`https`, `NewClient` retorna erro.
+
+```go
+client, err := httpclient.NewClient(httpclient.Config{
+	BaseURL: "",
+})
+if err != nil {
+	log.Fatal(err)
+}
 ```
 
 As chamadas podem ser feitas com path com ou sem barra inicial:
@@ -227,7 +251,7 @@ Isso evita repetir automaticamente chamadas como `POST`, `PUT` e `PATCH`, que po
 Para permitir retry em outro metodo, configure explicitamente:
 
 ```go
-client := httpclient.NewClient(httpclient.Config{
+client, err := httpclient.NewClient(httpclient.Config{
 	BaseURL: "https://api.example.com",
 	MaxRetries: 3,
 	RetryDelay: 500 * time.Millisecond,
@@ -238,6 +262,9 @@ client := httpclient.NewClient(httpclient.Config{
 		http.MethodPost,
 	},
 })
+if err != nil {
+	log.Fatal(err)
+}
 ```
 
 Para desabilitar retries por metodo, informe uma lista vazia:
@@ -261,7 +288,7 @@ Por padrao, estes status fazem retry:
 Para usar outra lista, configure explicitamente:
 
 ```go
-client := httpclient.NewClient(httpclient.Config{
+client, err := httpclient.NewClient(httpclient.Config{
 	BaseURL: "https://api.example.com",
 	MaxRetries: 3,
 	RetryDelay: 500 * time.Millisecond,
@@ -271,6 +298,9 @@ client := httpclient.NewClient(httpclient.Config{
 		http.StatusServiceUnavailable,
 	},
 })
+if err != nil {
+	log.Fatal(err)
+}
 ```
 
 Para desabilitar retries baseados em status HTTP, informe uma lista vazia:
@@ -280,6 +310,44 @@ RetryStatusCodes: []int{}
 ```
 
 Erros de rede ainda podem ser repetidos quando o metodo da requisicao estiver permitido em `RetryMethods`.
+
+### `MaxResponseBodySize`
+
+Define o tamanho maximo, em bytes, que o client pode ler do response body.
+
+```go
+MaxResponseBodySize: 1024 * 1024 // 1 MB
+```
+
+Quando o valor e `0` ou negativo, a lib nao aplica limite proprio e le o body inteiro.
+
+Quando a resposta passa do limite configurado, o client retorna um `*httpclient.ResponseBodyTooLargeError`.
+
+Valores sugeridos:
+
+```go
+MaxResponseBodySize: 256 * 1024        // 256 KB - respostas JSON pequenas
+MaxResponseBodySize: 1024 * 1024       // 1 MB - APIs JSON comuns
+MaxResponseBodySize: 5 * 1024 * 1024   // 5 MB - listas maiores
+MaxResponseBodySize: 10 * 1024 * 1024  // 10 MB - payloads grandes
+```
+
+Para APIs JSON comuns, `1 MB` costuma ser um bom valor inicial. Para download de arquivos, imagens, relatorios ou CSVs grandes, prefira um client baseado em stream em vez de ler tudo em memoria.
+
+```go
+body, err := client.Get(ctx, "/large-response")
+if err != nil {
+	var bodyErr *httpclient.ResponseBodyTooLargeError
+	if errors.As(err, &bodyErr) {
+		fmt.Printf("response body exceeded %d bytes\n", bodyErr.MaxSize)
+		return
+	}
+
+	log.Fatal(err)
+}
+
+fmt.Println(string(body))
+```
 
 ### `Logger`
 
@@ -357,10 +425,13 @@ customHTTPClient := &http.Client{
 	},
 }
 
-client := httpclient.NewClient(httpclient.Config{
+client, err := httpclient.NewClient(httpclient.Config{
 	BaseURL:    "https://api.example.com",
 	HTTPClient: customHTTPClient,
 })
+if err != nil {
+	log.Fatal(err)
+}
 ```
 
 Quando `HTTPClient` e informado, o campo `Timeout` do `Config` nao e aplicado automaticamente. Nesse caso, configure o timeout diretamente no `*http.Client` customizado.
