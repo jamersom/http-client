@@ -2,13 +2,25 @@ package httpclient
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
 const jsonContentType = "application/json"
+
+var (
+	// ErrEmptyBaseURL is returned when Config.BaseURL is empty.
+	ErrEmptyBaseURL = errors.New("httpclient: base URL is required")
+
+	// ErrInvalidBaseURL is returned when Config.BaseURL is not a valid HTTP URL.
+	ErrInvalidBaseURL = errors.New("httpclient: base URL must be a valid http or https URL")
+)
 
 // Config defines the settings used by NewClient.
 type Config struct {
@@ -20,7 +32,8 @@ type Config struct {
 	//
 	// Paths passed to methods such as Get and Post may include or omit the
 	// leading slash. Both "users" and "/users" become
-	// "https://api.example.com/users".
+	// "https://api.example.com/users". BaseURL must be a valid absolute http or
+	// https URL.
 	BaseURL string
 
 	// Timeout is applied to the default http.Client created by NewClient.
@@ -85,20 +98,28 @@ type Config struct {
 	// 504. Network errors may still be retried when the request method is
 	// retryable. Use an empty slice to disable retries based on status codes.
 	RetryStatusCodes []int
+
+	// MaxResponseBodySize limits how many bytes can be read from a response body.
+	//
+	// When zero or negative, response bodies are read without a library-defined
+	// limit. When positive, responses larger than this value return a
+	// *ResponseBodyTooLargeError.
+	MaxResponseBodySize int64
 }
 
 // Client sends HTTP requests to an API using the rules defined by Config.
 type Client struct {
-	baseURL          string
-	maxRetries       int
-	retryDelay       time.Duration
-	logger           *log.Logger
-	accept           string
-	contentType      string
-	headers          map[string]string
-	httpClient       *http.Client
-	retryMethods     map[string]struct{}
-	retryStatusCodes map[int]struct{}
+	baseURL             string
+	maxRetries          int
+	retryDelay          time.Duration
+	logger              *log.Logger
+	accept              string
+	contentType         string
+	headers             map[string]string
+	httpClient          *http.Client
+	retryMethods        map[string]struct{}
+	retryStatusCodes    map[int]struct{}
+	maxResponseBodySize int64
 }
 
 // NewClient creates a Client using cfg.
@@ -107,12 +128,20 @@ type Client struct {
 // Accept and Content-Type headers when they are not configured, copies Headers
 // so later changes to cfg.Headers do not affect the client, and uses either the
 // provided HTTPClient or a default *http.Client configured with Timeout.
+// NewClient returns an error when BaseURL is empty, invalid, or does not use
+// the http or https scheme.
 //
 // Retry behavior is controlled by MaxRetries, RetryDelay, RetryMethods, and
 // RetryStatusCodes. By default, only GET, HEAD, and OPTIONS are retried.
 // Configure RetryMethods explicitly to allow retries for methods such as POST,
-// PUT, PATCH, or DELETE.
-func NewClient(cfg Config) *Client {
+// PUT, PATCH, or DELETE. MaxResponseBodySize can be used to prevent reading
+// response bodies larger than the configured number of bytes.
+func NewClient(cfg Config) (*Client, error) {
+	baseURL, err := validateBaseURL(cfg.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+
 	accept := cfg.Accept
 	if accept == "" {
 		accept = jsonContentType
@@ -139,17 +168,36 @@ func NewClient(cfg Config) *Client {
 	}
 
 	return &Client{
-		baseURL:          cfg.BaseURL,
-		maxRetries:       cfg.MaxRetries,
-		retryDelay:       cfg.RetryDelay,
-		logger:           cfg.Logger,
-		accept:           accept,
-		contentType:      contentType,
-		headers:          headers,
-		httpClient:       httpClient,
-		retryMethods:     retryMethods,
-		retryStatusCodes: retryStatusCodes,
+		baseURL:             baseURL,
+		maxRetries:          cfg.MaxRetries,
+		retryDelay:          cfg.RetryDelay,
+		logger:              cfg.Logger,
+		accept:              accept,
+		contentType:         contentType,
+		headers:             headers,
+		httpClient:          httpClient,
+		retryMethods:        retryMethods,
+		retryStatusCodes:    retryStatusCodes,
+		maxResponseBodySize: cfg.MaxResponseBodySize,
+	}, nil
+}
+
+func validateBaseURL(baseURL string) (string, error) {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return "", ErrEmptyBaseURL
 	}
+
+	parsedURL, err := url.ParseRequestURI(baseURL)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return "", fmt.Errorf("%w: %q", ErrInvalidBaseURL, baseURL)
+	}
+
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return "", fmt.Errorf("%w: %q", ErrInvalidBaseURL, baseURL)
+	}
+
+	return strings.TrimRight(baseURL, "/"), nil
 }
 
 // request sends an HTTP request using the provided method, path, and body.
@@ -168,7 +216,7 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte) 
 
 	defer resp.Body.Close()
 
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := readResponseBody(resp.Body, c.maxResponseBodySize)
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +225,25 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte) 
 		return nil, &HTTPError{
 			StatusCode: resp.StatusCode,
 			Body:       responseBody,
+		}
+	}
+
+	return responseBody, nil
+}
+
+func readResponseBody(body io.Reader, maxSize int64) ([]byte, error) {
+	if maxSize <= 0 {
+		return io.ReadAll(body)
+	}
+
+	responseBody, err := io.ReadAll(io.LimitReader(body, maxSize+1))
+	if err != nil {
+		return nil, err
+	}
+
+	if int64(len(responseBody)) > maxSize {
+		return nil, &ResponseBodyTooLargeError{
+			MaxSize: maxSize,
 		}
 	}
 
